@@ -257,6 +257,19 @@ def predict():
         }), 500
 
 
+@app.route("/metrics", methods=["GET"])
+def metrics():
+    return jsonify({
+        "accuracy": 0.8079,
+        "precision": 0.8081,
+        "recall": 0.8079,
+        "f1_score": 0.8078,
+        "model_version": "3.0-prototype",
+        "evaluated_on": "20% held-out test set"
+    })
+
+
+
 if __name__ == "__main__":
     # Local development only. Render uses Gunicorn.
     app.run(
