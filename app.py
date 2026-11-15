@@ -1,4 +1,3 @@
-
 import os
 from pathlib import Path
 
@@ -46,7 +45,7 @@ if metadata.get("features") != FEATURES:
         "Feature mismatch. Check train_model.py and model_metadata.joblib."
     )
 
-# Set FRONTEND_ORIGIN to your Lovable website's origin.
+# Set FRONTEND_ORIGIN to your Lovable website's origin(s), comma-separated.
 # During local development, allow the Vite default origin.
 frontend_origin = os.environ.get(
     "FRONTEND_ORIGIN", "http://localhost:5173"
@@ -58,13 +57,13 @@ allowed_origins = [
     if origin.strip()
 ]
 
+# Apply CORS to all routes (including / health check and /predict)
 CORS(
     app,
-    resources={r"/predict": {"origins": allowed_origins}},
+    resources={r"/*": {"origins": allowed_origins}},
 )
 
 # Provisional bounds for rejecting obviously invalid inputs.
-# These are not agronomic suitability thresholds.
 NUMERIC_BOUNDS = {
     "nitrogen_mg_kg": (0, 10000),
     "phosphorus_mg_kg": (0, 10000),
@@ -75,12 +74,146 @@ NUMERIC_BOUNDS = {
     "moisture_percent": (0, 100),
 }
 
+
+# --------------------------------------------------
+# Agronomic Diagnostics Helpers
+# --------------------------------------------------
+
+def evaluate_nutrients(row):
+    """
+    Evaluates individual soil metrics against general agronomic thresholds.
+    Labels supported by the frontend UI: "Optimal", "Good", "Low", "High", "Moderate", "Bad".
+    """
+    n = row["nitrogen_mg_kg"]
+    p = row["phosphorus_mg_kg"]
+    k = row["potassium_mg_kg"]
+    ph = row["ph"]
+    ec = row["electrical_conductivity_ds_m"]
+    moisture = row["moisture_percent"]
+
+    # Nitrogen (mg/kg or ppm)
+    n_label = "Low" if n < 50 else ("Optimal" if n <= 140 else "High")
+
+    # Phosphorus (mg/kg)
+    p_label = "Low" if p < 25 else ("Optimal" if p <= 80 else "High")
+
+    # Potassium (mg/kg)
+    k_label = "Low" if k < 100 else ("Optimal" if k <= 250 else "High")
+
+    # pH
+    if 6.0 <= ph <= 7.5:
+        ph_label = "Optimal"
+    elif 5.5 <= ph < 6.0 or 7.5 < ph <= 8.2:
+        ph_label = "Moderate"
+    elif ph < 5.5:
+        ph_label = "Low"
+    else:
+        ph_label = "High"
+
+    # Electrical Conductivity (salinity in dS/m)
+    if ec <= 1.5:
+        ec_label = "Optimal"
+    elif ec <= 2.5:
+        ec_label = "Moderate"
+    else:
+        ec_label = "Bad"
+
+    # Moisture (%)
+    if 40 <= moisture <= 75:
+        moisture_label = "Optimal"
+    elif 25 <= moisture < 40:
+        moisture_label = "Moderate"
+    elif moisture < 25:
+        moisture_label = "Low"
+    else:
+        moisture_label = "High"
+
+    return [
+        {"name": "Nitrogen", "value": round(n, 1), "label": n_label},
+        {"name": "Phosphorus", "value": round(p, 1), "label": p_label},
+        {"name": "Potassium", "value": round(k, 1), "label": k_label},
+        {"name": "pH", "value": round(ph, 2), "label": ph_label},
+        {"name": "Electrical conductivity", "value": round(ec, 2), "label": ec_label},
+        {"name": "Moisture", "value": round(moisture, 1), "label": moisture_label},
+    ]
+
+
+def generate_recommendations(row, crop):
+    """
+    Builds tailored advisory messages according to nutrient deficiencies or soil stress.
+    """
+    n = row["nitrogen_mg_kg"]
+    p = row["phosphorus_mg_kg"]
+    k = row["potassium_mg_kg"]
+    ph = row["ph"]
+    ec = row["electrical_conductivity_ds_m"]
+    moisture = row["moisture_percent"]
+
+    recs = []
+
+    # Salinity
+    if ec > 2.5:
+        recs.append(
+            f"High salinity detected (EC {ec:.1f} dS/m): leach the field with clean water and improve sub-surface drainage before planting."
+        )
+    elif ec > 1.5:
+        recs.append(
+            "Mild salinity levels: monitor irrigation water salinity and avoid over-fertilizing with chloride-based salts."
+        )
+
+    # pH
+    if ph < 5.5:
+        recs.append(
+            f"Soil is acidic (pH {ph:.1f}): apply agricultural lime or dolomite to raise soil pH toward the optimal range (6.0 - 7.0)."
+        )
+    elif ph > 8.0:
+        recs.append(
+            f"Soil is alkaline (pH {ph:.1f}): incorporate gypsum and organic matter (farmyard manure) to reduce alkalinity and increase micronutrient uptake."
+        )
+
+    # Nitrogen
+    if n < 50:
+        recs.append(
+            f"Nitrogen is deficient ({n:.0f} mg/kg): apply urea, ammonium sulfate, or well-rotted compost in split doses for {crop}."
+        )
+    elif n > 140:
+        recs.append(
+            f"Excess nitrogen detected ({n:.0f} mg/kg): withhold synthetic nitrogen fertilizers to prevent vegetative overgrowth and lodging."
+        )
+
+    # Phosphorus
+    if p < 25:
+        recs.append(
+            f"Phosphorus is low ({p:.0f} mg/kg): apply single super phosphate (SSP) or DAP as basal fertilizer to promote root establishment."
+        )
+
+    # Potassium
+    if k < 100:
+        recs.append(
+            f"Potassium is low ({k:.0f} mg/kg): apply muriate of potash (MOP) to boost disease resistance and grain/fruit filling."
+        )
+
+    # Moisture
+    if moisture < 30:
+        recs.append(
+            f"Soil moisture is low ({moisture:.0f}%): schedule an irrigation cycle to prevent moisture stress in {crop}."
+        )
+    elif moisture > 80:
+        recs.append(
+            f"Soil moisture is saturated ({moisture:.0f}%): inspect drainage channels to prevent waterlogging and root rot."
+        )
+
+    if not recs:
+        recs.append(
+            f"Soil conditions and nutrient levels are well balanced for growing {crop}."
+        )
+
+    return recs
+
+
 # --------------------------------------------------
 # Authentication
 # --------------------------------------------------
-# Production requests must be authenticated with a
-# Firebase ID token. Local testing can temporarily
-# disable this guard using AUTH_REQUIRED=false.
 
 def verify_firebase_token():
     if os.environ.get("AUTH_REQUIRED", "true").lower() == "false":
@@ -90,11 +223,9 @@ def verify_firebase_token():
         return None
 
     from firebase_admin import auth, credentials, initialize_app
-
     import firebase_admin
 
     if not firebase_admin._apps:
-        # Configure this secret in Render, never in frontend code.
         service_account_json = os.environ.get(
             "FIREBASE_SERVICE_ACCOUNT_JSON"
         )
@@ -173,7 +304,6 @@ def predict():
             "fields": missing,
         }), 400
 
-    # Reject unexpected fields to catch frontend/schema mistakes.
     unexpected = [key for key in data if key not in FEATURES]
 
     if unexpected:
@@ -217,7 +347,7 @@ def predict():
 
         input_df = pd.DataFrame([row], columns=FEATURES)
 
-        # Predict condition
+        # Predict condition from your trained model
         prediction = str(model.predict(input_df)[0]).strip().title()
 
         valid_labels = {"Good", "Moderate", "Bad"}
@@ -227,6 +357,10 @@ def predict():
             return jsonify({
                 "error": "Model returned an invalid prediction."
             }), 500
+
+        # Generate nutrient breakdown and agronomic recommendations
+        nutrients = evaluate_nutrients(row)
+        recommendations = generate_recommendations(row, row["crop_selected"])
 
         response = {
             "prediction": prediction,
@@ -238,10 +372,10 @@ def predict():
                 "Prototype prediction based on provisional "
                 "dataset labels; not a validated soil diagnosis."
             ),
+            "nutrients": nutrients,
+            "recommendations": recommendations,
         }
 
-        # Return the authenticated user's UID for server-side
-        # context only; this does not itself save any Firestore data.
         if isinstance(user, dict):
             response["request_user_uid"] = user.get("uid")
 
@@ -269,9 +403,7 @@ def metrics():
     })
 
 
-
 if __name__ == "__main__":
-    # Local development only. Render uses Gunicorn.
     app.run(
         host="127.0.0.1",
         port=int(os.environ.get("PORT", 5000)),
