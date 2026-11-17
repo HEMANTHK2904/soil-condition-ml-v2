@@ -1,5 +1,6 @@
 import os
 from pathlib import Path
+import re
 
 import joblib
 import numpy as np
@@ -57,10 +58,18 @@ allowed_origins = [
     if origin.strip()
 ]
 
+# Allow all current and future Lovable preview and published domains
+allowed_origins.extend([
+    re.compile(r"https://.*\.lovable\.app"),
+    re.compile(r"https://.*\.lovableproject\.com"),
+])
+
 # Apply CORS to all routes (including / health check and /predict)
 CORS(
     app,
     resources={r"/*": {"origins": allowed_origins}},
+    allow_headers=["Content-Type", "Authorization"],
+    methods=["GET", "POST", "OPTIONS"],
 )
 
 # Provisional bounds for rejecting obviously invalid inputs.
